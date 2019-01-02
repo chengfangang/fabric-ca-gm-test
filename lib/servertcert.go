@@ -25,10 +25,10 @@ import (
 	cfsslapi "github.com/cloudflare/cfssl/api"
 	cerr "github.com/cloudflare/cfssl/errors"
 	"github.com/cloudflare/cfssl/log"
-	"github.com/hyperledger/fabric-ca/api"
-	"github.com/hyperledger/fabric-ca/lib/tcert"
-	"github.com/hyperledger/fabric-ca/util"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
+	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
 )
 
 // Handler for tcert requests
@@ -149,6 +149,11 @@ func getCertFromAuthHdr(r *http.Request) (*x509.Certificate, error) {
 
 // genRootKey generates a new root key
 func genRootKey(csp bccsp.BCCSP) (bccsp.Key, error) {
-	opts := &bccsp.AES256KeyGenOpts{Temporary: true}
+	var opts bccsp.KeyGenOpts
+	if IsGMConfig() {
+		opts = &bccsp.GMSM2KeyGenOpts{Temporary: true}
+	} else {
+		opts = &bccsp.ECDSAKeyGenOpts{Temporary: true}
+	}
 	return csp.KeyGen(opts)
 }

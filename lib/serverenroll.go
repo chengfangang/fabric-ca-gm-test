@@ -30,8 +30,11 @@ import (
 	cferr "github.com/cloudflare/cfssl/errors"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/hyperledger/fabric-ca/api"
-	"github.com/hyperledger/fabric-ca/util"
+	//"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm/sm2"
+
+	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 const (
@@ -119,7 +122,6 @@ func (sh *signHandler) handle(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	log.Debugf("Enrollment request: %+v\n", req)
-
 	caname := r.Header.Get(caHdrName)
 	if sh.server.caMap[caname].Config.Registry.MaxEnrollments == 0 {
 		return errors.New("The enroll API is disabled")
@@ -128,24 +130,33 @@ func (sh *signHandler) handle(w http.ResponseWriter, r *http.Request) error {
 	// Make any authorization checks needed, depending on the contents
 	// of the CSR (Certificate Signing Request)
 	enrollmentID := r.Header.Get(enrollmentIDHdrName)
+	log.Info("xxxxxxxxxxxx         enrollmentID [%s]", enrollmentID)
 	err = sh.csrChecks(&req.SignRequest, enrollmentID, r)
 	if err != nil {
 		return err
 	}
 
-	// Sign the certificate
-	cert, err := sh.server.caMap[caname].enrollSigner.Sign(req.SignRequest)
-	if err != nil {
-		return fmt.Errorf("Failed signing: %s", err)
-	}
+	//Sign the certificate
+	var cert []byte
+
+	//if IsGMConfig() {
+	cert, err = signCert(req.SignRequest, sh.server.caMap[caname])
+	//} else {
+	//cert, err = sh.server.caMap[caname].enrollSigner.Sign(req.SignRequest)
+	//}
+
+	//cert, err = sh.server.caMap[caname].enrollSigner.Sign(req.SignRequest)
 
 	// Send the response with the cert and the server info
+	if err != nil {
+		return err
+	}
+
 	resp := &enrollmentResponseNet{Cert: util.B64Encode(cert)}
 	err = sh.server.caMap[caname].fillCAInfo(&resp.ServerInfo)
 	if err != nil {
 		return err
 	}
-
 	return cfapi.SendResponse(w, resp)
 }
 
@@ -166,7 +177,16 @@ func (sh *signHandler) csrChecks(req *signer.SignRequest, enrollmentID string, r
 		return cferr.Wrap(cferr.CSRError,
 			cferr.BadRequest, errors.New("not a certificate or csr"))
 	}
-	csrReq, err := x509.ParseCertificateRequest(block.Bytes)
+	var csrReq *x509.CertificateRequest
+	var err error
+	if IsGMConfig() {
+		sm2csrReq, err := sm2.ParseCertificateRequest(block.Bytes)
+		if err == nil {
+			csrReq = ParseSm2CertificateRequest2X509(sm2csrReq)
+		}
+	} else {
+		csrReq, err = x509.ParseCertificateRequest(block.Bytes)
+	}
 	if err != nil {
 		return err
 	}

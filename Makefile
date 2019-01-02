@@ -27,7 +27,7 @@
 PROJECT_NAME   = fabric-ca
 BASE_VERSION   = 1.0.3
 PREV_VERSION   = 1.0.2
-IS_RELEASE     = true
+IS_RELEASE     = false
 
 ifneq ($(IS_RELEASE),true)
 EXTRA_VERSION ?= snapshot-$(shell git rev-parse --short HEAD)
@@ -55,7 +55,7 @@ path-map.fabric-ca-server := ./cmd/fabric-ca-server
 
 include docker-env.mk
 
-all: rename docker unit-tests
+all: rename fabric-ca-server fabric-ca-client
 
 rename: .FORCE
 	@scripts/rename-repo
@@ -67,7 +67,7 @@ docker-fvt: $(patsubst %,build/image/%/$(DUMMY), $(FVTIMAGE))
 changelog:
 	./scripts/changelog.sh v$(PREV_VERSION) HEAD v$(BASE_VERSION)
 
-checks: license vet lint format imports
+checks: vet lint format imports
 
 license: .FORCE
 	@scripts/check_license

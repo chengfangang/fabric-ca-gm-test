@@ -37,15 +37,17 @@ import (
 	"github.com/cloudflare/cfssl/initca"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/hyperledger/fabric-ca/api"
-	"github.com/hyperledger/fabric-ca/lib/dbutil"
-	"github.com/hyperledger/fabric-ca/lib/ldap"
-	"github.com/hyperledger/fabric-ca/lib/spi"
-	"github.com/hyperledger/fabric-ca/lib/tcert"
-	"github.com/hyperledger/fabric-ca/lib/tls"
-	"github.com/hyperledger/fabric-ca/util"
-	"github.com/hyperledger/fabric/bccsp"
 	"github.com/jmoiron/sqlx"
+	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
+	"github.com/tjfoc/fabric-ca-gm/lib/ldap"
+	"github.com/tjfoc/fabric-ca-gm/lib/spi"
+	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
+	"github.com/tjfoc/fabric-ca-gm/lib/tls"
+	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/tjfoc/gmsm/sm2"
+	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
+	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm"
 
 	_ "github.com/go-sql-driver/mysql" // import to support MySQL
 	_ "github.com/lib/pq"              // import to support Postgres
@@ -129,30 +131,38 @@ func initCA(ca *CA, homeDir string, config *CAConfig, server *Server, renew bool
 func (ca *CA) init(renew bool) (err error) {
 	log.Debugf("Init CA with home %s and config %+v", ca.HomeDir, *ca.Config)
 	// Initialize the config, setting defaults, etc
+	log.Info("#################name = ", ca.Config.CSP.ProviderName)
+	SetProviderName(ca.Config.CSP.ProviderName)
 	err = ca.initConfig()
 	if err != nil {
 		return err
 	}
+	log.Infof("xxx xxxxxxxxxxxxx ca.go InitBCCSP")
 	// Initialize the crypto layer (BCCSP) for this CA
 	ca.csp, err = util.InitBCCSP(&ca.Config.CSP, "", ca.HomeDir)
 	if err != nil {
 		return err
 	}
+
+	log.Infof("xxx xxxxxxxxxxxxx ca.go initKeyMaterial,renew=%t", renew)
 	// Initialize key materials
 	err = ca.initKeyMaterial(renew)
 	if err != nil {
 		return err
 	}
+	log.Infof("xxx xxxxxxxxxxxxx ca.go initDB")
 	// Initialize the database
 	err = ca.initDB()
 	if err != nil {
 		return err
 	}
+	log.Infof("xxx xxxxxxxxxxxxx ca.go initEnrollmentSigner")
 	// Initialize the enrollment signer
 	err = ca.initEnrollmentSigner()
 	if err != nil {
 		return err
 	}
+	log.Infof("xxx xxxxxxxxxxxxx ca.go TCert handling")
 	// Initialize TCert handling
 	keyfile := ca.Config.CA.Keyfile
 	certfile := ca.Config.CA.Certfile
@@ -161,6 +171,7 @@ func (ca *CA) init(renew bool) (err error) {
 		return err
 	}
 	// FIXME: The root prekey must be stored persistently in DB and retrieved here if not found
+	log.Infof("xxx xxxxxxxxxxxxx ca.go genRootKey and NewKeyTree")
 	rootKey, err := genRootKey(ca.csp)
 	if err != nil {
 		return err
@@ -189,6 +200,10 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 		// If they both exist, the CA was already initialized
 		keyFileExists := util.FileExists(keyFile)
 		certFileExists := util.FileExists(certFile)
+
+		log.Infof("xxxx keyFileExists [%s] exist? [%v]", keyFile, keyFileExists)
+		log.Infof("xxxx certFileExists [%s] exist? [%v]", certFile, certFileExists)
+
 		if keyFileExists && certFileExists {
 			log.Info("The CA key and certificate files already exist")
 			log.Infof("Key file location: %s", keyFile)
@@ -228,6 +243,7 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 		}
 	}
 
+	log.Info("xxxx getCACert and store ca cert")
 	// Get the CA cert
 	cert, err := ca.getCACert()
 	if err != nil {
@@ -313,23 +329,32 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		if csr.CA.Expiry == "" {
 			csr.CA.Expiry = defaultRootCACertificateExpiration
 		}
+
+		KeyRequest := cfcsr.NewBasicKeyRequest()
+		if IsGMConfig() {
+			KeyRequest = cfcsr.NewGMKeyRequest()
+		}
 		req := cfcsr.CertificateRequest{
 			CN:    csr.CN,
 			Names: csr.Names,
 			Hosts: csr.Hosts,
 			// FIXME: NewBasicKeyRequest only does ecdsa 256; use config
-			KeyRequest:   cfcsr.NewBasicKeyRequest(),
+			KeyRequest:   KeyRequest,
 			CA:           csr.CA,
 			SerialNumber: csr.SerialNumber,
 		}
 		log.Debugf("Root CA certificate request: %+v", req)
 		// Generate the key/signer
-		_, cspSigner, err := util.BCCSPKeyRequestGenerate(&req, ca.csp)
+		key, cspSigner, err := util.BCCSPKeyRequestGenerate(&req, ca.csp)
 		if err != nil {
 			return nil, err
 		}
 		// Call CFSSL to initialize the CA
-		cert, _, err = initca.NewFromSigner(&req, cspSigner)
+		if IsGMConfig() {
+			cert, err = createGmSm2Cert(key, &req, cspSigner)
+		} else {
+			cert, _, err = initca.NewFromSigner(&req, cspSigner)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create new CA certificate: %s", err)
 		}
@@ -417,14 +442,44 @@ func (ca *CA) initConfig() (err error) {
 	return nil
 }
 
+func getVerifyOptions(ca *CA) (*sm2.VerifyOptions, error) {
+	chain, err := ca.getCAChain()
+	if err != nil {
+		return nil, err
+	}
+	block, rest := pem.Decode(chain)
+	if block == nil {
+		return nil, errors.New("No root certificate was found")
+	}
+	rootCert, err := sm2.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse root certificate: %s", err)
+	}
+	rootPool := sm2.NewCertPool()
+	rootPool.AddCert(rootCert)
+	var intPool *sm2.CertPool
+	if len(rest) > 0 {
+		intPool = sm2.NewCertPool()
+		if !intPool.AppendCertsFromPEM(rest) {
+			return nil, errors.New("Failed to add intermediate PEM certificates")
+		}
+	}
+	return &sm2.VerifyOptions{
+		Roots:         rootPool,
+		Intermediates: intPool,
+		KeyUsages:     []sm2.ExtKeyUsage{sm2.ExtKeyUsageAny},
+	}, nil
+}
+
 // VerifyCertificate verifies that 'cert' was issued by this CA
 // Return nil if successful; otherwise, return an error.
 func (ca *CA) VerifyCertificate(cert *x509.Certificate) error {
-	opts, err := ca.getVerifyOptions()
+	sm2Cert := gm.ParseX509Certificate2Sm2(cert)
+	opts, err := getVerifyOptions(ca)
 	if err != nil {
 		return fmt.Errorf("Failed to get verify options: %s", err)
 	}
-	_, err = cert.Verify(*opts)
+	_, err = sm2Cert.Verify(*opts)
 	if err != nil {
 		return fmt.Errorf("Failed to verify certificate: %s", err)
 	}
@@ -539,7 +594,7 @@ func (ca *CA) initDB() error {
 			return err
 		}
 	}
-	log.Infof("Initialized %s database", db.Type)
+	log.Infof("Initialized %s database at %s", db.Type, db.Datasource)
 	return nil
 }
 
@@ -596,12 +651,14 @@ func (ca *CA) initEnrollmentSigner() (err error) {
 	}
 
 	ca.enrollSigner, err = util.BccspBackedSigner(c.CA.Certfile, c.CA.Keyfile, policy, ca.csp)
+
 	if err != nil {
 		return err
 	}
 	ca.enrollSigner.SetDBAccessor(ca.certDBAccessor)
 
 	// Successful enrollment
+	log.Info("xxxx Successful enrollment")
 	return nil
 }
 

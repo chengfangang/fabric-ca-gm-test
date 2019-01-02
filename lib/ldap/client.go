@@ -21,22 +21,19 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/hyperledger/fabric-ca/lib/spi"
-	ctls "github.com/hyperledger/fabric-ca/lib/tls"
-	"github.com/hyperledger/fabric-ca/util"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
+	"github.com/tjfoc/fabric-ca-gm/lib/spi"
+	ctls "github.com/tjfoc/fabric-ca-gm/lib/tls"
 	ldap "gopkg.in/ldap.v2"
 )
 
 var (
 	dnAttr          = []string{"dn"}
 	errNotSupported = errors.New("Not supported")
-	ldapURLRegex    = regexp.MustCompile("ldaps*://(\\S+):(\\S+)@")
 )
 
 // Config is the configuration object for this LDAP client
@@ -46,28 +43,6 @@ type Config struct {
 	UserFilter  string `def:"(uid=%s)" help:"The LDAP user filter to use when searching for users"`
 	GroupFilter string `def:"(memberUid=%s)" help:"The LDAP group filter for a single affiliation group"`
 	TLS         ctls.ClientTLSConfig
-}
-
-// Implements Stringer interface for ldap.Config
-// Calls util.StructToString to convert the Config struct to
-// string and masks the password from the ldap URL. Returns
-// resulting string.
-func (c Config) String() string {
-	str := util.StructToString(&c)
-	matches := ldapURLRegex.FindStringSubmatch(str)
-	// If there is a match, there should be two entries: 1 for
-	// the match and 2 for submatches
-	if len(matches) == 3 {
-		matchIdxs := ldapURLRegex.FindStringSubmatchIndex(str)
-		substr := str[matchIdxs[0]:matchIdxs[1]]
-		for idx := 1; idx < len(matches); idx++ {
-			if matches[idx] != "" {
-				substr = strings.Replace(substr, matches[idx], "****", 1)
-			}
-		}
-		str = str[:matchIdxs[0]] + substr + str[matchIdxs[1]:len(str)]
-	}
-	return str
 }
 
 // NewClient creates an LDAP client
@@ -151,12 +126,10 @@ type Client struct {
 // GetUser returns a user object for username and attribute values
 // for the requested attribute names
 func (lc *Client) GetUser(username string, attrNames []string) (spi.User, error) {
-
 	var sresp *ldap.SearchResult
 	var err error
 
 	log.Debugf("Getting user '%s'", username)
-
 	// Search for the given username
 	sreq := ldap.NewSearchRequest(
 		lc.Base, ldap.ScopeWholeSubtree,
@@ -185,11 +158,13 @@ func (lc *Client) GetUser(username string, attrNames []string) (spi.User, error)
 		log.Debugf("Searching for user '%s' using new connection", username)
 		conn, err = lc.newConnection()
 		if err != nil {
+			log.Infof("newConnetction err = %s", err)
 			return nil, err
 		}
 		sresp, err = conn.Search(sreq)
 		if err != nil {
 			conn.Close()
+			log.Infof("LDAP search failure: %s; search request: %+v", err, sreq)
 			return nil, fmt.Errorf("LDAP search failure: %s; search request: %+v", err, sreq)
 		}
 		// Cache the connection
@@ -198,9 +173,11 @@ func (lc *Client) GetUser(username string, attrNames []string) (spi.User, error)
 
 	// Make sure there was exactly one match found
 	if len(sresp.Entries) < 1 {
+		log.Infof("User '%s' does not exist in LDAP directory", username)
 		return nil, fmt.Errorf("User '%s' does not exist in LDAP directory", username)
 	}
 	if len(sresp.Entries) > 1 {
+		log.Infof("Multiple users with name '%s' exist in LDAP directory", username)
 		return nil, fmt.Errorf("Multiple users with name '%s' exist in LDAP directory", username)
 	}
 
@@ -223,7 +200,7 @@ func (lc *Client) GetUser(username string, attrNames []string) (spi.User, error)
 		attrs:  attrs,
 		client: lc,
 	}
-
+	log.Infof("Successfully retrieved user '%s', DN: %s", username, DN)
 	log.Debug("Successfully retrieved user '%s', DN: %s", username, DN)
 
 	return user, nil

@@ -18,11 +18,9 @@ package main
 
 import (
 	"fmt"
-
 	"github.com/cloudflare/cfssl/csr"
-	"github.com/cloudflare/cfssl/log"
-	"github.com/hyperledger/fabric-ca/util"
 	"github.com/spf13/cobra"
+	"github.com/tjfoc/fabric-ca-gm/util"
 )
 
 // InitConfig is the part of the config needed by init
@@ -50,7 +48,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	err := getServer().Init(false)
 	if err != nil {
 		util.Fatal("Initialization failure: %s", err)
+		//	fmt.Println("Initialization failure:%s",err)
 	}
-	log.Info("Initialization was successful")
 	return nil
 }
